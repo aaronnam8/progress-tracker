@@ -1,202 +1,188 @@
 // db.js — the ONLY data API the screen code (app.js) is allowed to call.
 //
-// Target shape (see v2 spec §3):
+// Target shape (see v2 spec §3), plus a few `*.listByClass` helpers that are
+// NOT in the spec's interface but are cheap to offer locally and save app.js
+// from re-deriving joins by hand. A future SupabaseAdapter can implement them
+// as a single join query, or app.js can be adjusted to do without them —
+// they're a convenience, not a contract:
+//
 //   db.classes     { list, get, create, update, archive }
 //   db.students    { listByClass, get, create, update, setStatus }
-//   db.enrollments { listByStudent, create, end }
+//   db.enrollments { listByStudent, listByClass*, create, end }
 //   db.sessions    { listByClass, getByDate, create, update }
-//   db.attendance  { getBySession, upsertMany }
-//   db.records     { getBySession, getByStudent, upsert }
+//   db.attendance  { getBySession, listByClass*, upsertMany }
+//   db.records     { getBySession, getByStudent, listByClass*, upsert }
 //   db.reports     { getByStudent, create, update }
 //
-// When the backend moves to Supabase (spec step 4), only this file changes —
-// swap the `ClaudeAdapter()` call at the bottom for `SupabaseAdapter(...)`.
-//
-// IMPORTANT — this is an interim adapter. It talks to `window.claude.use('db')`,
-// which only exists inside a Claude artifact — it is NOT available on the
-// Netlify deploy. It has no realtime subscriptions: callers must re-fetch
-// (list / getByDate) after a write to see the change reflected elsewhere.
-// enrollments / attendance / reports have no backing table yet in the legacy
-// schema, so those methods reject until the schema is extended (spec step 5+).
+// This is the MVP-without-Supabase adapter: everything lives in
+// localStorage, scoped to one browser. No auth, no sharing across devices.
+// Swapping in SupabaseAdapter later (spec step 4) means changing only this
+// file — the shape above is designed to map 1:1 onto the SQL tables in the
+// spec so that swap doesn't ripple into app.js.
+
+var LS_PREFIX = 'pt_';
 
 function uid(){ return 'u' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 function nowIso(){ return new Date().toISOString(); }
-function sessionIdFor(classId, date){ return classId + '__' + date; }
-
-function notImplemented(name, step){
-  return function(){ return Promise.reject(new Error(name + ' is not implemented yet — see v2 spec ' + step)); };
+function todayStr(){
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 
-function ClaudeAdapter(){
-  var raw = null; // resolves to window.claude's db namespace, or stays null if unavailable
-  var readyPromise = (window.claude && window.claude.use ? window.claude.use('db') : Promise.resolve(null))
-    .then(function(ns){ raw = ns || null; return !!raw; })
-    .catch(function(){ raw = null; return false; });
+function loadTable(name){
+  try { return JSON.parse(localStorage.getItem(LS_PREFIX + name) || '[]'); }
+  catch(e){ console.error('db: corrupt table', name, e); return []; }
+}
+function saveTable(name, rows){
+  localStorage.setItem(LS_PREFIX + name, JSON.stringify(rows));
+}
+function genericGet(name, id){
+  return Promise.resolve(loadTable(name).find(function(r){ return r.id === id; }) || null);
+}
+function genericCreate(name, data, defaults){
+  var rows = loadTable(name);
+  var row = Object.assign({ id: uid(), createdAt: nowIso() }, defaults, data);
+  rows.push(row);
+  saveTable(name, rows);
+  return Promise.resolve({ id: row.id });
+}
+function genericUpdate(name, id, data){
+  var rows = loadTable(name);
+  var idx = rows.findIndex(function(r){ return r.id === id; });
+  if(idx < 0) return Promise.reject(new Error(name + ' ' + id + ' not found'));
+  rows[idx] = Object.assign({}, rows[idx], data);
+  saveTable(name, rows);
+  return Promise.resolve();
+}
 
-  function need(){
-    return readyPromise.then(function(ok){
-      if(!ok || !raw) throw new Error('db unavailable — not running inside a Claude artifact');
-      return raw;
-    });
-  }
+function LocalStorageAdapter(){
 
-  // ---- classes ----
   var classes = {
     list: function(){
-      return need().then(function(raw){
-        return raw.collection('classes').orderBy('createdAt', 'asc').get().then(function(snap){
-          return snap.docs.map(function(d){ return Object.assign({ id: d.id }, d.data()); });
-        });
-      });
+      return Promise.resolve(loadTable('classes').slice()
+        .sort(function(a,b){ return (a.createdAt||'').localeCompare(b.createdAt||''); }));
     },
-    get: function(id){
-      return need().then(function(raw){
-        return raw.doc('classes/' + id).get().then(function(snap){
-          return snap.exists ? Object.assign({ id: snap.id }, snap.data()) : null;
-        });
-      });
+    get: function(id){ return genericGet('classes', id); },
+    create: function(data){ return genericCreate('classes', data, { archived: false }); },
+    update: function(id, data){ return genericUpdate('classes', id, data); },
+    archive: function(id, archived){ return genericUpdate('classes', id, { archived: !!archived }); }
+  };
+
+  // ---- enrollments (student <-> class membership, with history) ----
+  var enrollments = {
+    listByStudent: function(studentId){
+      return Promise.resolve(loadTable('enrollments').filter(function(e){ return e.studentId === studentId; }));
+    },
+    // extra helper (not in spec interface): active enrollments for a class.
+    listByClass: function(classId){
+      return Promise.resolve(loadTable('enrollments').filter(function(e){ return e.classId === classId && !e.leaveDate; }));
     },
     create: function(data){
-      return need().then(function(raw){
-        return raw.collection('classes').add(Object.assign({ archived: false, createdAt: nowIso() }, data))
-          .then(function(ref){ return { id: ref.id }; });
-      });
+      return genericCreate('enrollments', data, { joinDate: data.joinDate || todayStr() });
     },
-    update: function(id, data){
-      return need().then(function(raw){ return raw.doc('classes/' + id).update(data); });
-    },
-    archive: function(id, archived){
-      return need().then(function(raw){ return raw.doc('classes/' + id).update({ archived: archived }); });
+    end: function(id, leaveDate){
+      return genericUpdate('enrollments', id, { leaveDate: leaveDate || todayStr() });
     }
   };
 
-  // ---- students ----
-  // NOTE: legacy schema keeps classId directly on the student (no enrollment table yet).
   var students = {
     listByClass: function(classId){
-      return need().then(function(raw){
-        return raw.collection('students').where('classId', '==', classId).get().then(function(snap){
-          return snap.docs.map(function(d){ return Object.assign({ id: d.id }, d.data()); })
-            .sort(function(a, b){ return (a.name || '').localeCompare(b.name || '', 'ko'); });
-        });
+      return enrollments.listByClass(classId).then(function(rows){
+        var ids = rows.map(function(r){ return r.studentId; });
+        return loadTable('students').filter(function(s){ return ids.indexOf(s.id) !== -1; })
+          .sort(function(a,b){ return (a.name||'').localeCompare(b.name||'', 'ko'); });
       });
     },
-    get: function(id){
-      return need().then(function(raw){
-        return raw.doc('students/' + id).get().then(function(snap){
-          return snap.exists ? Object.assign({ id: snap.id }, snap.data()) : null;
-        });
-      });
-    },
-    create: function(data){
-      return need().then(function(raw){
-        return raw.collection('students').add(Object.assign({ active: true, createdAt: nowIso() }, data))
-          .then(function(ref){ return { id: ref.id }; });
-      });
-    },
-    update: function(id, data){
-      return need().then(function(raw){ return raw.doc('students/' + id).update(data); });
-    },
-    setStatus: function(id, active){
-      return need().then(function(raw){ return raw.doc('students/' + id).update({ active: active }); });
-    }
-  };
-
-  // ---- enrollments ---- (no table in legacy schema yet — v2 spec step 5)
-  var enrollments = {
-    listByStudent: notImplemented('enrollments.listByStudent', 'step 5'),
-    create: notImplemented('enrollments.create', 'step 5'),
-    end: notImplemented('enrollments.end', 'step 5')
+    get: function(id){ return genericGet('students', id); },
+    create: function(data){ return genericCreate('students', data, { status: 'active' }); },
+    update: function(id, data){ return genericUpdate('students', id, data); },
+    setStatus: function(id, status){ return genericUpdate('students', id, { status: status }); }
   };
 
   // ---- sessions ----
-  // A session doc is lazily created on first write (ensureSession), same as the
-  // original single-file app did via commitField/commitSessionField.
-  function ensureSession(classId, date){
-    var id = sessionIdFor(classId, date);
-    return need().then(function(raw){
-      var ref = raw.doc('sessions/' + id);
-      return ref.get().then(function(snap){
-        if(snap.exists) return { ref: ref, id: id };
-        var base = { classId: classId, date: date, topic: '', memo: '', createdAt: nowIso(), records: {} };
-        return ref.set(base).then(function(){ return { ref: ref, id: id }; });
-      });
-    });
-  }
-
   var sessions = {
     listByClass: function(classId, limit){
-      return need().then(function(raw){
-        return raw.collection('sessions').where('classId', '==', classId).orderBy('date', 'desc').limit(limit || 200).get()
-          .then(function(snap){ return snap.docs.map(function(d){ return Object.assign({ id: d.id }, d.data()); }); });
-      });
+      return Promise.resolve(loadTable('sessions').filter(function(s){ return s.classId === classId; })
+        .sort(function(a,b){ return a.date < b.date ? 1 : -1; })
+        .slice(0, limit || 500));
     },
-    // read-only: does NOT create a row. Returns a synthetic empty shell if none exists yet.
     getByDate: function(classId, date){
-      var id = sessionIdFor(classId, date);
-      return need().then(function(raw){
-        return raw.doc('sessions/' + id).get().then(function(snap){
-          if(snap.exists) return Object.assign({ id: id }, snap.data());
-          return { id: id, classId: classId, date: date, topic: '', memo: '', records: {} };
-        });
-      });
+      return Promise.resolve(loadTable('sessions').find(function(s){ return s.classId === classId && s.date === date; }) || null);
     },
     create: function(classId, date, data){
-      var id = sessionIdFor(classId, date);
-      return need().then(function(raw){
-        return raw.doc('sessions/' + id)
-          .set(Object.assign({ classId: classId, date: date, topic: '', memo: '', createdAt: nowIso(), records: {} }, data))
-          .then(function(){ return { id: id }; });
+      return genericCreate('sessions', Object.assign({ classId: classId, date: date }, data), { topic: '', materialRef: '' });
+    },
+    update: function(id, data){ return genericUpdate('sessions', id, data); }
+  };
+
+  // ---- attendance ----
+  var attendance = {
+    getBySession: function(sessionId){
+      return Promise.resolve(loadTable('attendance').filter(function(a){ return a.sessionId === sessionId; }));
+    },
+    // extra helper: every attendance row for sessions belonging to a class (date-joined).
+    listByClass: function(classId){
+      return sessions.listByClass(classId, 100000).then(function(sess){
+        var sessById = {}; sess.forEach(function(s){ sessById[s.id] = s; });
+        return loadTable('attendance').filter(function(a){ return sessById[a.sessionId]; })
+          .map(function(a){ return Object.assign({}, a, { date: sessById[a.sessionId].date }); });
       });
     },
-    // upsert-style: creates the session row on first call for this class+date.
-    update: function(classId, date, fields){
-      return ensureSession(classId, date).then(function(s){ return s.ref.update(fields); });
+    upsertMany: function(sessionId, list){
+      var rows = loadTable('attendance');
+      list.forEach(function(item){
+        var idx = rows.findIndex(function(r){ return r.sessionId === sessionId && r.studentId === item.studentId; });
+        if(idx >= 0) rows[idx] = Object.assign({}, rows[idx], item);
+        else rows.push(Object.assign({ id: uid(), sessionId: sessionId }, item));
+      });
+      saveTable('attendance', rows);
+      return Promise.resolve();
     }
   };
 
-  // ---- attendance ---- (no table in legacy schema yet — v2 spec step 5/7)
-  var attendance = {
-    getBySession: function(){ return Promise.resolve([]); },
-    upsertMany: notImplemented('attendance.upsertMany', 'step 7')
-  };
-
-  // ---- records ---- (legacy schema embeds records as a map on the session doc)
+  // ---- records ----
   var records = {
     getBySession: function(sessionId){
-      return need().then(function(raw){
-        return raw.doc('sessions/' + sessionId).get().then(function(snap){
-          return snap.exists ? (snap.data().records || {}) : {};
-        });
+      return Promise.resolve(loadTable('records').filter(function(r){ return r.sessionId === sessionId; }));
+    },
+    getByStudent: function(studentId){
+      var recs = loadTable('records').filter(function(r){ return r.studentId === studentId; });
+      var sessById = {}; loadTable('sessions').forEach(function(s){ sessById[s.id] = s; });
+      return Promise.resolve(recs.map(function(r){ return Object.assign({}, r, { session: sessById[r.sessionId] }); })
+        .filter(function(r){ return r.session; })
+        .sort(function(a,b){ return a.session.date < b.session.date ? 1 : -1; }));
+    },
+    // extra helper: every record row for sessions belonging to a class (for progress/hw carry-over).
+    listByClass: function(classId){
+      return sessions.listByClass(classId, 100000).then(function(sess){
+        var sessById = {}; sess.forEach(function(s){ sessById[s.id] = s; });
+        return loadTable('records').filter(function(r){ return sessById[r.sessionId]; })
+          .map(function(r){ return Object.assign({}, r, { date: sessById[r.sessionId].date }); });
       });
     },
-    // legacy shim needs classId explicitly (no enrollment table to join through yet).
-    getByStudent: function(studentId, opts){
-      var classId = opts && opts.classId;
-      if(!classId) return Promise.reject(new Error('legacy adapter requires opts.classId for records.getByStudent'));
-      return sessions.listByClass(classId).then(function(list){
-        return list.filter(function(s){ return s.records && s.records[studentId]; })
-          .map(function(s){ return { sessionId: s.id, date: s.date, topic: s.topic, record: s.records[studentId] }; });
-      });
-    },
-    upsert: function(classId, date, studentId, fields){
-      return ensureSession(classId, date).then(function(s){
-        var payload = { records: {} };
-        payload.records[studentId] = Object.assign({}, fields, { updatedAt: nowIso() });
-        return s.ref.update(payload);
-      });
+    upsert: function(sessionId, studentId, fields){
+      var rows = loadTable('records');
+      var idx = rows.findIndex(function(r){ return r.sessionId === sessionId && r.studentId === studentId; });
+      var now = nowIso();
+      if(idx >= 0) rows[idx] = Object.assign({}, rows[idx], fields, { updatedAt: now });
+      else rows.push(Object.assign({ id: uid(), sessionId: sessionId, studentId: studentId, updatedAt: now }, fields));
+      saveTable('records', rows);
+      return Promise.resolve();
     }
   };
 
-  // ---- reports ---- (no table in legacy schema yet — v2 spec step 10)
+  // ---- reports ----
   var reports = {
-    getByStudent: function(){ return Promise.resolve([]); },
-    create: notImplemented('reports.create', 'step 10'),
-    update: notImplemented('reports.update', 'step 10')
+    getByStudent: function(studentId){
+      return Promise.resolve(loadTable('reports').filter(function(r){ return r.studentId === studentId; })
+        .sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); }));
+    },
+    create: function(data){ return genericCreate('reports', data, {}); },
+    update: function(id, data){ return genericUpdate('reports', id, data); }
   };
 
   return {
-    ready: readyPromise,
+    ready: Promise.resolve(true),
     classes: classes,
     students: students,
     enrollments: enrollments,
@@ -207,4 +193,4 @@ function ClaudeAdapter(){
   };
 }
 
-export const db = ClaudeAdapter();
+export const db = LocalStorageAdapter();

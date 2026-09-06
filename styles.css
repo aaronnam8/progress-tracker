@@ -193,10 +193,79 @@ table.students tr.is-inactive td{color:var(--ink-faint);}
 .toast.is-show{opacity:1; transform:translateY(0);}
 @media (prefers-reduced-motion: reduce){ .toast{transition:none;} }
 
+/* ---------- sidebar: per-class student sublist (v2 §6.1) ---------- */
+.sub-student-list{display:flex; flex-direction:column; gap:2px; padding:2px 0 8px 20px; margin-bottom:2px;}
+.sub-back-btn{background:none; border:none; color:var(--accent-strong); font-size:11.5px; font-weight:600; cursor:pointer; text-align:left; padding:4px 6px; margin-bottom:2px;}
+.sub-student-row{display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:var(--radius-sm); cursor:pointer; font-size:12.5px;}
+.sub-student-row:hover{background:var(--surface-2);}
+.sub-student-row.is-active{background:var(--surface); font-weight:600;}
+.sub-student-row.is-dim{color:var(--ink-faint);}
+.sub-student-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.sub-badge{font-size:9.5px; padding:1px 6px;}
+.sub-student-edit{opacity:0; background:none; border:none; cursor:pointer; color:var(--ink-soft); font-size:11px; padding:2px;}
+.sub-student-row:hover .sub-student-edit{opacity:1;}
+.sub-empty{font-size:11.5px; color:var(--ink-faint); padding:4px 8px;}
+.sub-add-student{background:none; border:1px dashed var(--line-strong); color:var(--ink-soft); border-radius:var(--radius-sm); padding:6px 8px; margin-left:20px; cursor:pointer; font-size:11.5px; font-weight:600; text-align:left;}
+.sub-add-student:hover{color:var(--accent-strong); border-color:var(--accent);}
+
+/* ---------- attendance (v2 §6.2) ---------- */
+.att-bar{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;}
+.att-chip{border:1px solid var(--line); border-radius:999px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; background:var(--surface); color:var(--ink-soft);}
+.att-badge{border:1px solid var(--line); border-radius:999px; padding:3px 10px; font-size:11.5px; font-weight:700; cursor:pointer; background:var(--surface); color:var(--ink-soft);}
+.att-badge.readonly{cursor:default;}
+.att-chip.att-present, .att-badge.att-present{border-color:var(--accent); color:var(--accent-strong); background:var(--accent-soft);}
+.att-chip.att-late, .att-badge.att-late{border-color:var(--gold); color:var(--gold); background:var(--gold-soft);}
+.att-chip.att-absent, .att-badge.att-absent{border-color:var(--danger); color:var(--danger); background:var(--danger-soft);}
+.att-chip.att-makeup, .att-badge.att-makeup{border-color:var(--line-strong); color:var(--ink-soft); background:var(--surface-inset);}
+
+/* ---------- record cards (v2 §6.2) ---------- */
+.rec-cards{display:flex; flex-direction:column; gap:12px;}
+.rec-card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px;}
+.rec-card.is-collapsed{opacity:.6; padding:10px 16px;}
+.rec-card-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;}
+.rec-card.is-collapsed .rec-card-head{margin-bottom:0;}
+.rec-card-name{font-weight:600; font-size:14px;}
+.rec-card-name .stu-phone{font-weight:400; font-size:11px; color:var(--ink-faint); font-family:var(--font-mono); margin-left:8px;}
+.rec-card-collapsed-note{font-size:12px; color:var(--ink-soft); margin-top:6px;}
+.link-btn{background:none; border:none; color:var(--accent-strong); cursor:pointer; font-size:12px; font-weight:600; text-decoration:underline; padding:0;}
+.rec-card-body{display:flex; flex-direction:column; gap:12px;}
+.rec-field label{display:block; font-size:11px; font-weight:600; color:var(--ink-soft); margin-bottom:4px; text-transform:uppercase; letter-spacing:.03em;}
+.rec-field-row{display:flex; gap:16px; flex-wrap:wrap;}
+.rec-field-row > .rec-field{flex:1; min-width:180px;}
+.rec-progress-row{display:flex; align-items:center; gap:8px;}
+.rec-progress-row .cell-input{border:1px solid var(--line);}
+.rec-progress-sep{color:var(--ink-faint); flex:none;}
+
+.recent-summary{margin-top:20px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px;}
+.recent-summary h3{font-family:var(--font-display); font-size:15px; margin:0 0 10px;}
+.recent-row{display:grid; grid-template-columns:70px 1fr auto; gap:10px; font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--line);}
+.recent-row:last-child{border-bottom:none;}
+
+/* ---------- history: period filter + handoff (v2 §6.3, §6.5) ---------- */
+.history-picker select, .history-picker input[type=date]{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 10px; font-size:13px;}
+.period-filter{display:flex; gap:6px; align-items:center; flex-wrap:wrap;}
+.period-btn.is-active{border-color:var(--accent); color:var(--accent-strong); background:var(--accent-soft);}
+.handoff-memo{background:var(--gold-soft); border:1px solid var(--gold); border-radius:var(--radius); padding:12px 16px; margin-bottom:18px;}
+.handoff-memo strong{display:block; font-size:11.5px; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); margin-bottom:4px;}
+.handoff-memo p{margin:0; font-size:13.5px;}
+.timeline-item.has-note{border-left:3px solid var(--gold); padding-left:12px; margin-left:-15px;}
+
+/* ---------- report tab (v2 §6.4) ---------- */
+.report-layout{display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;}
+.report-side{width:200px; flex:none;}
+.report-side h3{font-family:var(--font-display); font-size:14px; margin:0 0 10px;}
+.report-prev-list{display:flex; flex-direction:column; gap:4px;}
+.report-prev-item{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 10px; font-size:12px; text-align:left; cursor:pointer; color:var(--ink-soft);}
+.report-prev-item:hover{border-color:var(--accent); color:var(--ink);}
+.report-main{flex:1; min-width:320px;}
+.report-textarea{width:100%; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:14px; font-family:var(--font-mono); font-size:13px; line-height:1.7; margin-top:12px; resize:vertical;}
+
 @media (max-width:760px){
   .app{flex-direction:column;}
   .sidebar{width:100%; flex-direction:row; overflow-x:auto; min-height:auto; align-items:center;}
   .class-list{flex-direction:row;}
   .brand{border-bottom:none; padding:0 10px 0 0; border-right:2px solid var(--accent);}
   .main-header, .tab-nav, .tab-content{padding-left:16px; padding-right:16px;}
+  .report-layout{flex-direction:column;}
+  .report-side{width:100%;}
 }
